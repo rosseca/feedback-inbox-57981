@@ -46,6 +46,12 @@
   color: #64748b;
 }
 
+.side {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .date {
   color: #64748b;
   font-size: 0.75rem;

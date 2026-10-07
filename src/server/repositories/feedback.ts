@@ -1,19 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
-import { ACTIVE_STATUSES, evaluateCloseTransition, type CloseOutcome, type FeedbackPriority } from '@/contracts/feedback';
+import { ACTIVE_STATUSES, type FeedbackPriority } from '@/contracts/feedback';
 import type { ListFeedbackQuery } from '@/contracts/api';
 import { getDb } from '../db';
 import { feedback, feedbackEvents, users } from '../db/schema';
 
 export type FeedbackRow = typeof feedback.$inferSelect;
-
-export interface CloseTransactionResult {
-  outcome: CloseOutcome;
-  feedback: FeedbackRow;
-  previousStatus: FeedbackRow['status'];
-  creatorEmail: string | null;
-}
 
 const closerUsers = alias(users, 'closed_by_user');
 
@@ -132,68 +125,48 @@ export function createFeedbackWithEvent(input: {
   });
 }
 
-export function closeFeedbackInTransaction(
-  id: string,
-  workspaceId: string,
-  actorUserId: string,
-): CloseTransactionResult | null {
-  const db = getDb();
-  return db.transaction(
-    (tx) => {
-      const existing = tx
-        .select()
-        .from(feedback)
-        .where(and(eq(feedback.id, id), eq(feedback.workspaceId, workspaceId)))
-        .limit(1)
-        .get();
-      if (!existing) {
-        return null;
-      }
-      const transition = evaluateCloseTransition(existing.status);
-      if (!transition) {
-        return null;
-      }
-      if (transition === 'already_closed') {
-        return { outcome: 'already_closed', feedback: existing, previousStatus: existing.status, creatorEmail: null };
-      }
+export function findFeedbackById(id: string): FeedbackRow | null {
+  return getDb().select().from(feedback).where(eq(feedback.id, id)).limit(1).get() ?? null;
+}
 
-      const now = new Date().toISOString();
-      const updated = tx
-        .update(feedback)
-        .set({ status: 'closed', closedAt: now, closedByUserId: actorUserId, updatedAt: now })
-        .where(and(eq(feedback.id, id), eq(feedback.workspaceId, workspaceId), eq(feedback.status, existing.status)))
-        .returning()
-        .get();
+export function findFeedbackCreatorEmail(feedbackId: string): string | null {
+  const row = getDb()
+    .select({ email: users.email })
+    .from(feedbackEvents)
+    .innerJoin(users, eq(users.id, feedbackEvents.actorUserId))
+    .where(and(eq(feedbackEvents.feedbackId, feedbackId), eq(feedbackEvents.type, 'feedback_created')))
+    .limit(1)
+    .get();
+  return row?.email ?? null;
+}
 
-      tx.insert(feedbackEvents)
-        .values({
-          id: randomUUID(),
-          feedbackId: id,
-          workspaceId,
-          actorUserId,
-          type: 'feedback_closed',
-          metadataJson: JSON.stringify({ title: existing.title }),
-          createdAt: now,
-        })
-        .run();
+export function markFeedbackClosed(id: string, actorUserId: string): FeedbackRow | null {
+  const now = new Date().toISOString();
+  getDb()
+    .update(feedback)
+    .set({ status: 'closed', closedAt: now, closedByUserId: actorUserId, updatedAt: now })
+    .where(eq(feedback.id, id))
+    .run();
+  return findFeedbackById(id);
+}
 
-      const createdEvent = tx
-        .select({ actorUserId: feedbackEvents.actorUserId })
-        .from(feedbackEvents)
-        .where(and(eq(feedbackEvents.feedbackId, id), eq(feedbackEvents.type, 'feedback_created')))
-        .limit(1)
-        .get();
-      const creator = createdEvent
-        ? tx.select().from(users).where(eq(users.id, createdEvent.actorUserId)).limit(1).get()
-        : null;
-
-      return {
-        outcome: 'closed',
-        feedback: updated,
-        previousStatus: existing.status,
-        creatorEmail: creator?.email ?? null,
-      };
-    },
-    { behavior: 'immediate' },
-  );
+export function insertFeedbackClosedEvent(input: {
+  feedbackId: string;
+  workspaceId: string;
+  actorUserId: string;
+  title: string;
+  createdAt: string;
+}): void {
+  getDb()
+    .insert(feedbackEvents)
+    .values({
+      id: randomUUID(),
+      feedbackId: input.feedbackId,
+      workspaceId: input.workspaceId,
+      actorUserId: input.actorUserId,
+      type: 'feedback_closed',
+      metadataJson: JSON.stringify({ title: input.title }),
+      createdAt: input.createdAt,
+    })
+    .run();
 }
