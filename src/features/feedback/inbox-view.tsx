@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
+import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Spinner } from '@/components/ui/spinner';
-import type { ListFeedbackQuery } from '@/contracts/api';
+import type { FeedbackListResponse, ListFeedbackQuery } from '@/contracts/api';
+import { toast } from '@/components/ui/toast-store';
 import { FeedbackList } from './feedback-list';
 import { FeedbackFilters } from './filters';
-import { useCachedFeedbackList } from './use-cached-feedback-list';
 
 export function InboxView({
   filters,
@@ -16,11 +17,58 @@ export function InboxView({
   filters: ListFeedbackQuery;
   workspaceName: string;
 }) {
-  const list = useCachedFeedbackList({
-    query: filters.query,
-    status: filters.status,
-    priority: filters.priority,
-  });
+  const [list, setList] = useState<FeedbackListResponse | null>(null);
+
+  const load = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (filters.query) {
+      params.set('query', filters.query);
+    }
+    if (filters.status) {
+      params.set('status', filters.status);
+    }
+    if (filters.priority) {
+      params.set('priority', filters.priority);
+    }
+    const queryString = params.toString();
+    try {
+      const res = await fetch(`/api/feedback${queryString ? `?${queryString}` : ''}`);
+      if (!res.ok) {
+        throw new Error('Request failed');
+      }
+      setList((await res.json()) as FeedbackListResponse);
+    } catch {
+      setList({ items: [], activeCount: 0 });
+    }
+  }, [filters.query, filters.status, filters.priority]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleQuickClose(feedbackId: string) {
+    const removed = list?.items.find((item) => item.id === feedbackId) ?? null;
+    setList((current) =>
+      current
+        ? {
+            items: current.items.filter((item) => item.id !== feedbackId),
+            activeCount: current.activeCount - 1,
+          }
+        : current,
+    );
+    try {
+      const res = await fetch(`/api/feedback/${feedbackId}/close`, { method: 'PATCH' });
+      if (!res.ok) {
+        throw new Error('Request failed');
+      }
+      toast('success', 'Feedback closed');
+    } catch {
+      toast('error', 'Feedback could not be closed. Please try again.');
+      if (removed) {
+        setList((current) => (current ? { ...current, items: [removed, ...current.items] } : current));
+      }
+    }
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -49,7 +97,7 @@ export function InboxView({
           description="Feedback created for your workspace will show up here."
         />
       ) : (
-        <FeedbackList items={list.items} />
+        <FeedbackList items={list.items} onQuickClose={handleQuickClose} />
       )}
     </div>
   );

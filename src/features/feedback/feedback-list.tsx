@@ -1,9 +1,16 @@
 import Link from 'next/link';
 import type { FeedbackDto } from '@/contracts/api';
 import { PriorityBadge, StatusBadge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import styles from './feedback-list.module.css';
 
-export function FeedbackList({ items }: { items: FeedbackDto[] }) {
+export function FeedbackList({
+  items,
+  onQuickClose,
+}: {
+  items: FeedbackDto[];
+  onQuickClose?: (feedbackId: string) => void;
+}) {
   return (
     <ul className={styles.list}>
       {items.map((item) => (
@@ -16,7 +23,14 @@ export function FeedbackList({ items }: { items: FeedbackDto[] }) {
               {item.attachmentFilename ? <span className={styles.attachment}>has attachment</span> : null}
             </span>
           </Link>
-          <span className={styles.date}>{formatDate(item.createdAt)}</span>
+          <span className={styles.side}>
+            <span className={styles.date}>{formatDate(item.createdAt)}</span>
+            {onQuickClose ? (
+              <Button variant="danger" onClick={() => onQuickClose(item.id)}>
+                Close
+              </Button>
+            ) : null}
+          </span>
         </li>
       ))}
     </ul>

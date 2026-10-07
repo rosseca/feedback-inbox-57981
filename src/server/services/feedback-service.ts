@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { evaluateCloseTransition } from '@/contracts/feedback';
 import type {
   CloseFeedbackResponse,
   CreateFeedbackInput,
@@ -101,51 +102,42 @@ export async function createFeedback(session: SessionUser, input: CreateFeedback
 }
 
 export async function closeFeedback(session: SessionUser, feedbackId: string): Promise<CloseFeedbackResponse> {
-  return withSpan('feedback.close', { 'feedback.id': feedbackId, 'workspace.id': session.workspaceId }, async () => {
-    const result = feedbackRepo.closeFeedbackInTransaction(feedbackId, session.workspaceId, session.userId);
-    if (!result) {
-      logger.warn('feedback.close', {
-        workspaceId: session.workspaceId,
-        feedbackId,
-        actorUserId: session.userId,
-        outcome: 'failed',
-      });
+  return withSpan('feedback.close', {}, async () => {
+    const existing = feedbackRepo.findFeedbackById(feedbackId);
+    if (!existing) {
       throw new HttpError(404, 'not_found', 'Resource not found');
     }
-
-    if (result.outcome === 'already_closed') {
-      logger.info('feedback.close', {
-        workspaceId: session.workspaceId,
-        feedbackId,
-        actorUserId: session.userId,
-        previousStatus: result.previousStatus,
-        resultingStatus: result.feedback.status,
-        outcome: 'already_closed',
-      });
-      return { feedback: toFeedbackDto(result.feedback, null), outcome: 'already_closed' };
+    const transition = evaluateCloseTransition(existing.status);
+    if (!transition) {
+      throw new HttpError(404, 'not_found', 'Resource not found');
+    }
+    if (transition === 'already_closed') {
+      logger.info('feedback.close', { feedbackId });
+      return { feedback: toFeedbackDto(existing, null), outcome: 'already_closed' };
     }
 
-    if (result.creatorEmail) {
-      await withSpan('mailer.feedback_closed', { 'feedback.id': feedbackId }, () =>
-        getMailer().sendFeedbackClosedEmail(
-          buildFeedbackClosedEmail({
-            creatorEmail: result.creatorEmail!,
-            feedbackTitle: result.feedback.title,
-            closedByDisplayName: session.displayName,
-          }),
-        ),
+    const creatorEmail = feedbackRepo.findFeedbackCreatorEmail(feedbackId);
+    if (creatorEmail) {
+      await getMailer().sendFeedbackClosedEmail(
+        buildFeedbackClosedEmail({
+          creatorEmail,
+          feedbackTitle: existing.title,
+          closedByDisplayName: session.displayName,
+        }),
       );
     }
 
-    logger.info('feedback.close', {
-      workspaceId: session.workspaceId,
+    const closed = feedbackRepo.markFeedbackClosed(feedbackId, session.userId);
+    feedbackRepo.insertFeedbackClosedEvent({
       feedbackId,
+      workspaceId: existing.workspaceId,
       actorUserId: session.userId,
-      previousStatus: result.previousStatus,
-      resultingStatus: result.feedback.status,
-      outcome: 'closed',
+      title: existing.title,
+      createdAt: new Date().toISOString(),
     });
-    return { feedback: toFeedbackDto(result.feedback, session.displayName), outcome: 'closed' };
+
+    logger.info('feedback.close', { feedbackId });
+    return { feedback: toFeedbackDto(closed ?? existing, session.displayName), outcome: 'closed' };
   });
 }
 
